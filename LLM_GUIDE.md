@@ -1,3 +1,38 @@
+# n8n MCP Server - LLM Guide
+
+This guide shows how to use the n8n MCP Server's enhanced debugging capabilities with different LLM clients.
+
+## Enhanced Debugging Features (v1.2.0)
+
+The n8n MCP Server includes powerful debugging tools for workflow troubleshooting:
+
+### Core Debugging Functions
+
+- **get-execution-details** - Enhanced execution data with smart error handling for large datasets
+- **get-execution-logs** - Extract error messages and logs without massive data payloads  
+- **get-workflow-executions** - Filter executions by workflow with status filtering
+- **retry-execution** - Retry failed executions directly from your LLM
+
+### Debugging Examples
+
+```
+"Get execution logs for failed execution 386"
+"Show error details for workflow ID a9c0db0c-f2a8-4758-ab07-07d12a384d9c"
+"List all failed executions for workflow xyz with error logs only"
+"Retry failed execution 386"
+"Get comprehensive execution details for ID 382"
+```
+
+### Smart Error Handling
+
+The enhanced debugging tools include:
+- **Graceful fallbacks** when execution data is too large for MCP token limits
+- **Smart truncation** that preserves critical debug information
+- **Targeted debugging** focused on specific workflow failures
+- **Rich context** for both successful and failed workflow analysis
+
+---
+
 # Example Clients
 Source: https://modelcontextprotocol.io/clients
 

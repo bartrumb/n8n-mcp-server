@@ -1,7 +1,7 @@
 {
   "name": "@illuminaresolutions/n8n-mcp-server",
-  "description": "An MCP server that provides access to n8n workflows, executions, credentials, and more through the Model Context Protocol",
-  "version": "1.0.0",
+  "description": "Comprehensive MCP server for n8n automation with schema validation, smart node suggestions, workflow filtering, composition guides, and advanced debugging tools through the Model Context Protocol",
+  "version": "1.2.0",
   "type": "module",
   "bin": {
     "n8n-mcp-server": "build/index.js"
@@ -35,14 +35,37 @@
     "llm",
     "ai",
     "claude",
-    "modelcontextprotocol"
+    "modelcontextprotocol",
+    "documentation",
+    "search",
+    "docs",
+    "debugging",
+    "execution-logs",
+    "workflow-debugging",
+    "schema-validation",
+    "node-validation",
+    "workflow-composition",
+    "zod",
+    "mcp-resources",
+    "workflow-filtering",
+    "smart-suggestions",
+    "caching"
   ],
   "scripts": {
-    "build": "tsc && chmod +x build/index.js",
+    "build": "npm run clean && tsc && chmod +x build/index.js",
+    "build:watch": "tsc --watch",
     "start": "node build/index.js",
+    "dev": "npm run build && npm start",
+    "dev:watch": "tsc --watch & nodemon build/index.js",
     "prepublishOnly": "npm run build",
     "clean": "rm -rf build",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "lint:fix": "tsc --noEmit && echo 'TypeScript compilation successful'",
+    "test:build": "npm run build && echo 'Build test passed'",
+    "validate": "npm run lint && npm run test:build",
+    "package": "npm run validate && npm pack",
+    "install:global": "npm run build && npm link",
+    "uninstall:global": "npm unlink"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^0.7.0",

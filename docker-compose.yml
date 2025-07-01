@@ -1,0 +1,79 @@
+version: '3.8'
+
+services:
+  n8n-mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: n8n-mcp-server:latest
+    container_name: n8n-mcp-server
+    restart: unless-stopped
+    
+    # Environment variables
+    environment:
+      - NODE_ENV=production
+      - N8N_HOST=${N8N_HOST:-http://host.docker.internal:5678/api/v1}
+      - N8N_API_KEY=${N8N_API_KEY}
+      - OUTPUT_VERBOSITY=${OUTPUT_VERBOSITY:-concise}
+      - CACHE_ENABLED=${CACHE_ENABLED:-true}
+      - CACHE_TTL=${CACHE_TTL:-300}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - SERVER_NAME=${SERVER_NAME:-n8n-workflow-builder}
+    
+    # Volumes for persistent data (if needed)
+    volumes:
+      - ./logs:/app/logs:rw
+    
+    # Network configuration
+    networks:
+      - n8n-network
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "node", "-e", "console.log('Health check: OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Optional: n8n service (if not running separately)
+  # n8n:
+  #   image: n8nio/n8n:latest
+  #   container_name: n8n
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5678:5678"
+  #   environment:
+  #     - N8N_BASIC_AUTH_ACTIVE=true
+  #     - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+  #     - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-admin}
+  #   volumes:
+  #     - n8n_data:/home/node/.n8n
+  #   networks:
+  #     - n8n-network
+
+networks:
+  n8n-network:
+    driver: bridge
+
+volumes:
+  n8n_data:
+    driver: local

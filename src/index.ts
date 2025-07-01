@@ -5,6 +5,21 @@ import { z } from "zod";
 import fetch from 'node-fetch';
 import * as fs from 'fs';
 import * as path from 'path';
+import { 
+  NodeSchema, 
+  ConnectionSchema, 
+  WorkflowSchema, 
+  CreateWorkflowInputSchema,
+  ExecutionSchema,
+  type Node,
+  type Connection,
+  type Workflow,
+  type CreateWorkflowInput,
+  type Execution
+} from './schemas.js';
+import { NodeValidator } from './node-validator.js';
+import { config, formatOutput } from './config.js';
+import { setupResourceHandlers } from './resource-handlers.js';
 
 // Type definitions for n8n API responses
 interface N8nUser {
@@ -392,12 +407,15 @@ class DocumentationManager {
 const docManager = new DocumentationManager();
 
 class N8nClient {
+  private nodeValidator: NodeValidator;
+
   constructor(
     private baseUrl: string,
     private apiKey: string
   ) {
     // Remove trailing slash if present
     this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.nodeValidator = new NodeValidator(this.baseUrl, this.apiKey);
   }
 
   private async makeRequest<T>(endpoint: string, options: any = {}): Promise<T> {
@@ -451,11 +469,17 @@ class N8nClient {
       } catch (jsonError) {
         // JSON parsing failed but HTTP request succeeded
         // This often happens with successful operations that return malformed JSON
-        console.warn(`JSON parsing failed for successful response: ${jsonError}`);
+        console.warn(`JSON parsing failed for successful response. Status: ${response.status}, URL: ${url}, Response: ${responseText.substring(0, 200)}, Error: ${jsonError}`);
+        // For successful operations that don't return JSON, return empty object
         return {} as T;
       }
     } catch (error) {
       if (error instanceof Error) {
+        // Don't re-throw JSON parsing errors as they should be handled above
+        if (error.message.includes('Unexpected end of JSON input') || error.message.includes('JSON')) {
+          console.warn(`JSON parsing error caught in outer handler: ${error.message}`);
+          return {} as T;
+        }
         throw new Error(`Failed to connect to n8n: ${error.message}`);
       }
       throw error;
@@ -483,6 +507,90 @@ class N8nClient {
         },
       }),
     });
+  }
+
+  // Validate workflow data using Zod schemas
+  validateWorkflow(workflowData: any): { isValid: boolean; errors?: string[]; validatedData?: Workflow } {
+    try {
+      const validatedData = WorkflowSchema.parse(workflowData);
+      return { isValid: true, validatedData };
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        const errors = error.errors.map(err => `${err.path.join('.')}: ${err.message}`);
+        return { isValid: false, errors };
+      }
+      return { isValid: false, errors: ['Unknown validation error'] };
+    }
+  }
+
+  // Validate individual node data
+  validateNode(nodeData: any): { isValid: boolean; errors?: string[]; validatedData?: Node } {
+    try {
+      const validatedData = NodeSchema.parse(nodeData);
+      return { isValid: true, validatedData };
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        const errors = error.errors.map(err => `${err.path.join('.')}: ${err.message}`);
+        return { isValid: false, errors };
+      }
+      return { isValid: false, errors: ['Unknown validation error'] };
+    }
+  }
+
+  // Create workflow with validation
+  async createValidatedWorkflow(workflowInput: CreateWorkflowInput): Promise<N8nWorkflow> {
+    // Validate the input using schema
+    const validationResult = CreateWorkflowInputSchema.safeParse(workflowInput);
+    
+    if (!validationResult.success) {
+      const errors = validationResult.error.errors.map(err => `${err.path.join('.')}: ${err.message}`);
+      throw new Error(`Workflow validation failed: ${errors.join(', ')}`);
+    }
+
+    const { workflow, activate = false } = validationResult.data;
+    
+    // Validate node types against n8n instance
+    if (workflow.nodes && workflow.nodes.length > 0) {
+      const nodeValidationErrors = await this.nodeValidator.validate_workflow_nodes(workflow.nodes);
+      if (nodeValidationErrors.length > 0) {
+        const errorMessages = nodeValidationErrors.map(error => 
+          error.suggestion 
+            ? `Invalid node type "${error.node_type}". Did you mean "${error.suggestion}"?`
+            : `Invalid node type "${error.node_type}"`
+        );
+        throw new Error(`Node validation failed: ${errorMessages.join(', ')}`);
+      }
+    }
+    
+    // Create the workflow
+    const createdWorkflow = await this.makeRequest<N8nWorkflow>('/workflows', {
+      method: 'POST',
+      body: JSON.stringify(workflow),
+    });
+
+    // Activate if requested
+    if (activate && createdWorkflow.id) {
+      await this.activateWorkflow(createdWorkflow.id.toString());
+    }
+
+    return createdWorkflow;
+  }
+
+  // Node validation methods
+  async getAvailableNodes(): Promise<any[]> {
+    return this.nodeValidator.get_available_nodes();
+  }
+
+  async getAvailableNodeTypes(): Promise<string[]> {
+    return this.nodeValidator.get_available_node_types();
+  }
+
+  async validateNodeType(nodeType: string): Promise<{ valid: boolean; suggestion?: string }> {
+    return this.nodeValidator.validate_node_type(nodeType);
+  }
+
+  async validateWorkflowNodes(nodes: Array<{ type: string }>): Promise<Array<{ node_type: string; suggestion?: string }>> {
+    return this.nodeValidator.validate_workflow_nodes(nodes);
   }
 
   async updateWorkflow(id: string, workflow: Partial<N8nWorkflow>): Promise<N8nWorkflow> {
@@ -783,12 +891,13 @@ class N8nClient {
 // Create an MCP server
 const server = new Server(
   {
-    name: "n8n-integration",
-    version: "1.0.0"
+    name: config.server_name,
+    version: config.server_version
   },
   {
     capabilities: {
-      tools: {}
+      tools: {},
+      resources: {}
     }
   }
 );
@@ -818,7 +927,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
-            clientId: { type: "string" }
+            clientId: { type: "string" },
+            nameFilter: { 
+              type: "string", 
+              description: "Filter workflows by name (case-insensitive partial match)" 
+            },
+            activeOnly: { 
+              type: "boolean", 
+              description: "If true, only return active workflows. If false, only inactive workflows. If not specified, return all workflows." 
+            },
+            tags: { 
+              type: "array", 
+              items: { type: "string" },
+              description: "Filter workflows that have any of these tags" 
+            }
           },
           required: ["clientId"]
         }
@@ -847,6 +969,62 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             connections: { type: "object" }
           },
           required: ["clientId", "name"]
+        }
+      },
+      {
+        name: "validate-workflow",
+        description: "✅ Validate workflow structure and data using Zod schemas. WHAT: Validates workflow configuration including nodes, connections, and settings for compliance with n8n API requirements. WHEN: Use before creating or updating workflows to ensure data integrity and prevent API errors. RETURNS: Validation results with detailed error messages if validation fails. Triggers: 'validate workflow', 'check workflow structure', 'verify workflow data'.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            clientId: { type: "string" },
+            workflowData: { type: "object" }
+          },
+          required: ["clientId", "workflowData"]
+        }
+      },
+      {
+        name: "validate-node",
+        description: "🔍 Validate individual node structure and configuration. WHAT: Validates single node data including type, position, parameters, and credentials against schema requirements. WHEN: Use when building workflows node by node or troubleshooting node configuration issues. RETURNS: Validation results with specific field errors if validation fails. Triggers: 'validate node', 'check node data', 'verify node configuration'.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            clientId: { type: "string" },
+            nodeData: { type: "object" }
+          },
+          required: ["clientId", "nodeData"]
+        }
+      },
+      {
+        name: "create-validated-workflow",
+        description: "🛡️ Create workflow with comprehensive validation and optional activation. WHAT: Creates workflow using validated input schema with strict type checking and optional automatic activation. WHEN: Use for production workflow creation where data integrity is critical. RETURNS: Created workflow object with validation confirmation. Triggers: 'create validated workflow', 'build secure workflow', 'create production workflow'.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            clientId: { type: "string" },
+            workflowInput: { type: "object" }
+          },
+          required: ["clientId", "workflowInput"]
+        }
+      },
+      {
+        name: "list-available-nodes",
+        description: "📋 List all available nodes in the n8n instance. WHAT: Retrieves comprehensive list of all node types available in the connected n8n instance with categorization and descriptions. WHEN: Use BEFORE creating workflows to ensure you only use valid node types. Essential for preventing workflow creation errors. RETURNS: Organized list of available nodes with display names, categories, and descriptions. Triggers: 'list nodes', 'available nodes', 'what nodes exist', 'node types'.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            clientId: { type: "string" },
+            verbosity: { 
+              type: "string", 
+              enum: ["concise", "summary", "full"],
+              description: "Output detail level (default: concise)"
+            },
+            category: { 
+              type: "string",
+              description: "Filter by node category (e.g. 'n8n-nodes-base')"
+            }
+          },
+          required: ["clientId"]
         }
       },
       {
@@ -1422,7 +1600,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case "list-workflows": {
-      const { clientId } = args as { clientId: string };
+      const { clientId, nameFilter, activeOnly, tags } = args as { 
+        clientId: string; 
+        nameFilter?: string; 
+        activeOnly?: boolean; 
+        tags?: string[] 
+      };
       const client = clients.get(clientId);
       if (!client) {
         return {
@@ -1436,7 +1619,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       try {
         const workflows = await client.listWorkflows();
-        const formattedWorkflows = workflows.data.map(wf => ({
+        let filteredWorkflows = workflows.data;
+
+        // Apply name filter (case-insensitive partial match)
+        if (nameFilter) {
+          const lowerNameFilter = nameFilter.toLowerCase();
+          filteredWorkflows = filteredWorkflows.filter(wf => 
+            wf.name.toLowerCase().includes(lowerNameFilter)
+          );
+        }
+
+        // Apply active status filter
+        if (activeOnly !== undefined) {
+          filteredWorkflows = filteredWorkflows.filter(wf => wf.active === activeOnly);
+        }
+
+        // Apply tags filter (workflow must have at least one of the specified tags)
+        if (tags && tags.length > 0) {
+          filteredWorkflows = filteredWorkflows.filter(wf => 
+            wf.tags && wf.tags.some(tag => tags.includes(tag))
+          );
+        }
+
+        const formattedWorkflows = filteredWorkflows.map(wf => ({
           id: wf.id,
           name: wf.name,
           active: wf.active,
@@ -1445,10 +1650,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           tags: wf.tags,
         }));
 
+        const resultMessage = nameFilter || activeOnly !== undefined || (tags && tags.length > 0)
+          ? `Found ${formattedWorkflows.length} workflows matching filters`
+          : `Found ${formattedWorkflows.length} workflows`;
+
         return {
           content: [{
             type: "text",
-            text: JSON.stringify(formattedWorkflows, null, 2),
+            text: `${resultMessage}:\n\n${formatOutput(formattedWorkflows, config.output_verbosity)}`,
           }]
         };
       } catch (error) {
@@ -1556,6 +1765,231 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{
             type: "text",
             text: `Successfully created workflow:\n${JSON.stringify(workflow, null, 2)}`,
+          }]
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: error instanceof Error ? error.message : "Unknown error occurred",
+          }],
+          isError: true
+        };
+      }
+    }
+
+    case "validate-workflow": {
+      const { clientId, workflowData } = args as {
+        clientId: string;
+        workflowData: any;
+      };
+
+      const client = clients.get(clientId);
+      if (!client) {
+        return {
+          content: [{
+            type: "text",
+            text: "Client not initialized. Please run init-n8n first.",
+          }],
+          isError: true
+        };
+      }
+
+      try {
+        const validationResult = client.validateWorkflow(workflowData);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              isValid: validationResult.isValid,
+              ...(validationResult.errors && { errors: validationResult.errors }),
+              ...(validationResult.validatedData && { message: "Workflow structure is valid" })
+            }, null, 2),
+          }]
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: error instanceof Error ? error.message : "Unknown error occurred",
+          }],
+          isError: true
+        };
+      }
+    }
+
+    case "validate-node": {
+      const { clientId, nodeData } = args as {
+        clientId: string;
+        nodeData: any;
+      };
+
+      const client = clients.get(clientId);
+      if (!client) {
+        return {
+          content: [{
+            type: "text",
+            text: "Client not initialized. Please run init-n8n first.",
+          }],
+          isError: true
+        };
+      }
+
+      try {
+        const validationResult = client.validateNode(nodeData);
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              isValid: validationResult.isValid,
+              ...(validationResult.errors && { errors: validationResult.errors }),
+              ...(validationResult.validatedData && { message: "Node structure is valid" })
+            }, null, 2),
+          }]
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: error instanceof Error ? error.message : "Unknown error occurred",
+          }],
+          isError: true
+        };
+      }
+    }
+
+    case "create-validated-workflow": {
+      const { clientId, workflowInput } = args as {
+        clientId: string;
+        workflowInput: CreateWorkflowInput;
+      };
+
+      const client = clients.get(clientId);
+      if (!client) {
+        return {
+          content: [{
+            type: "text",
+            text: "Client not initialized. Please run init-n8n first.",
+          }],
+          isError: true
+        };
+      }
+
+      try {
+        const workflow = await client.createValidatedWorkflow(workflowInput);
+        return {
+          content: [{
+            type: "text",
+            text: `Successfully created validated workflow:\n${JSON.stringify(workflow, null, 2)}`,
+          }]
+        };
+      } catch (error) {
+        return {
+          content: [{
+            type: "text",
+            text: error instanceof Error ? error.message : "Unknown error occurred",
+          }],
+          isError: true
+        };
+      }
+    }
+
+    case "list-available-nodes": {
+      const { clientId, verbosity = 'concise', category } = args as {
+        clientId: string;
+        verbosity?: 'concise' | 'summary' | 'full';
+        category?: string;
+      };
+
+      const client = clients.get(clientId);
+      if (!client) {
+        return {
+          content: [{
+            type: "text",
+            text: "Client not initialized. Please run init-n8n first.",
+          }],
+          isError: true
+        };
+      }
+
+      try {
+        const nodes = await client.getAvailableNodes();
+        
+        // Sort nodes by name for easier reading
+        nodes.sort((a, b) => a.name.localeCompare(b.name));
+
+        // Group nodes by category for better organization
+        const groupedNodes: Record<string, any[]> = {};
+
+        for (const node of nodes) {
+          // Extract category from node name (e.g., "n8n-nodes-base.httpRequest" -> "n8n-nodes-base")
+          const parts = node.name.split('.');
+          const nodeCategory = parts.length > 1 ? parts[0] : 'other';
+
+          if (!groupedNodes[nodeCategory]) {
+            groupedNodes[nodeCategory] = [];
+          }
+
+          groupedNodes[nodeCategory].push({
+            name: node.name,
+            display_name: node.display_name,
+            description: node.description,
+          });
+        }
+
+        // Filter by category if specified
+        let filteredCategories = Object.entries(groupedNodes);
+        if (category) {
+          filteredCategories = filteredCategories.filter(
+            ([cat]) => cat.toLowerCase() === category.toLowerCase(),
+          );
+        }
+
+        let output = '';
+
+        // Create header
+        output += `Found ${nodes.length} available nodes in the n8n instance.\n\n`;
+        output += `When creating workflows, use these exact node types to ensure compatibility.\n\n`;
+
+        // For summary mode, just show counts by category
+        if (verbosity === 'summary') {
+          output += `Node counts by category:\n\n`;
+          filteredCategories.forEach(([cat, categoryNodes]) => {
+            output += `- ${cat}: ${categoryNodes.length} nodes\n`;
+          });
+          
+          return {
+            content: [{ type: 'text', text: output }],
+          };
+        }
+
+        // For concise or full mode, show nodes by category
+        output += `Available nodes by category:\n\n`;
+
+        output += filteredCategories
+          .map(([cat, categoryNodes]) => {
+            return (
+              `## ${cat}\n\n` +
+              categoryNodes
+                .map((node) => {
+                  if (verbosity === 'full') {
+                    return `- \`${node.name}\`: ${node.display_name}${
+                      node.description ? ` - ${node.description}` : ''
+                    }`;
+                  } else {
+                    // Concise mode - just show name and display name
+                    return `- \`${node.name}\`: ${node.display_name}`;
+                  }
+                })
+                .join('\n')
+            );
+          })
+          .join('\n\n');
+
+        return {
+          content: [{
+            type: "text",
+            text: output,
           }]
         };
       } catch (error) {
@@ -2875,6 +3309,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
   }
 });
+
+// Setup resource handlers
+setupResourceHandlers(server, clients);
 
 // Start the server
 const transport = new StdioServerTransport();

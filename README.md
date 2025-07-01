@@ -117,6 +117,50 @@ If you get an error:
 - Verify your API key has correct permissions
 - Ensure N8N_HOST has no trailing slash
 
+## Usage Examples
+
+### Basic Workflow Management
+```
+"List my n8n workflows"
+"Show me workflow details for ID 123"
+"Activate workflow ID 456"
+"Create a new workflow called 'Data Sync'"
+```
+
+### Documentation Lookup
+```
+"Search n8n documentation for HTTP Request"
+"Find documentation about workflow triggers"
+"Show me all documentation categories"
+"Get documentation for the Gmail node"
+"How do I configure OAuth2 authentication?"
+```
+
+### Execution Management
+```
+"Show recent workflow executions"
+"Get execution details for ID 789"
+"List failed executions from today"
+"Show executions for workflow ID 123"
+```
+
+### Advanced Debugging (NEW in v1.2.0)
+```
+"Get detailed execution logs for ID 789"
+"Show error messages from failed execution 456"
+"List all executions for workflow ID 123 with errors only"
+"Get comprehensive execution details for ID 789"
+"Retry failed execution ID 456"
+```
+
+### Security and Auditing
+```
+"Generate a security audit report"
+"Show me all credentials"
+"List users in the n8n instance"
+"Create a security audit for credentials only"
+```
+
 ## Features
 
 ### Core Features
@@ -127,6 +171,58 @@ If you get an error:
 - Handle tags and executions
 - Generate security audits
 - Manage workflow tags
+
+### Advanced Debugging Features (NEW in v1.2.0)
+- **get-execution-details**: Comprehensive execution data with enhanced error handling
+- **get-execution-logs**: Extract only error messages and logs without full data payload
+- **get-workflow-executions**: List executions for specific workflows with filtering
+- **retry-execution**: Retry failed executions directly from Claude
+- **Enhanced list-executions**: Better error filtering and status information
+
+### Documentation Features
+- **search-docs**: Search through n8n documentation by keywords and topics
+- **get-doc-section**: Retrieve specific documentation sections by file path
+- **list-doc-categories**: Browse available documentation categories and structure
+- **get-node-docs**: Get documentation for specific n8n nodes with fallback search
+
+#### Documentation Search Details
+
+The n8n MCP server includes comprehensive documentation lookup capabilities that allow you to search through and retrieve n8n documentation directly through natural language queries.
+
+**search-docs**
+- Searches across all available documentation files
+- Uses intelligent relevance scoring
+- Returns ranked results with excerpts
+- Supports keywords, topics, and questions
+- Example: "Search for HTTP Request node configuration"
+
+**get-doc-section**
+- Retrieves complete content of specific documentation files
+- Use file paths returned from search results
+- Returns full documentation with title, category, and content
+- Example: "Get the documentation section for workflows/create.md"
+
+**list-doc-categories**
+- Browse the structure of available documentation
+- Shows all categories and document counts
+- Filter by specific categories if needed
+- Helps discover available documentation topics
+
+**get-node-docs**
+- Node-specific documentation lookup
+- Searches for exact node documentation first
+- Falls back to general search for related content
+- Covers all n8n core and integration nodes
+- Example: "Get documentation for the Gmail node"
+
+**Documentation Coverage**
+The server provides access to comprehensive n8n documentation including:
+- Node configuration and usage
+- Workflow creation and management  
+- Authentication and credentials
+- API integration patterns
+- Best practices and troubleshooting
+- Advanced features and enterprise capabilities
 
 ### Enterprise Features
 These features require an n8n Enterprise license:
@@ -151,6 +247,12 @@ These features require an n8n Enterprise license:
    - Verify n8n instance is running
    - Check URL protocol (http/https)
    - Remove trailing slash from N8N_HOST
+
+4. Documentation Search Issues
+   - "Documentation not found": The docs directory may not be accessible
+   - "No results found": Try broader search terms or check spelling
+   - "Empty categories": Documentation files may not be in the expected location
+   - Check that `/mnt/c/Code/n8n/docs` exists and contains markdown files
 
 ## Security Best Practices
 
