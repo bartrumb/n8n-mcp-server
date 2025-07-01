@@ -61,3 +61,8 @@ tmp/
 
 # TypeScript
 *.js.map
+../claude-mcp-readme.md
+# Parent directory files with potential sensitive data
+../*api*key*
+../*secret*
+../*token*
