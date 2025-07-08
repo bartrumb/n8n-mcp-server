@@ -1,5 +1,5 @@
 # Build
-build/
+# build/ - commented out so build artifacts are included in repo for npx installation
 dist/
 *.tsbuildinfo
 
